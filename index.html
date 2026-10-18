@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
@@ -29,6 +29,7 @@
 }
 *{box-sizing:border-box}
 html,body{height:100%}
+html,body,button,svg,.k{touch-action:manipulation}
 body{background:radial-gradient(1200px 700px at 72% 40%,#221d52 0%,var(--bg) 60%) fixed,var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.4;
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
   -webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
@@ -299,8 +300,6 @@ function renderSetup(){
         <div><div class="lbl">Mäxchen-Bild</div><p>Erscheint, wenn jemand einfach 5, 20 und 1 in einer Aufnahme trifft.</p>
         <div class="row"><label class="btn ghost" for="maxfile">Bild wählen</label><input id="maxfile" type="file" accept="image/*" hidden>
         ${maxImg()?'<button class="btn ghost" id="maxdel" type="button">Entfernen</button>':''}<button class="btn ghost" id="maxtest" type="button">Testen</button></div></div></div>
-      <button class="btn ghost" id="voiceTest" type="button">Ansage testen</button>
-      <p class="vstat" id="vstat"></p>
       <button class="btn go" id="start" ${sel.length<1?'disabled':''}>Spiel starten (${sel.length} Spieler)</button></div>
     </section></div>`;
   document.querySelectorAll('.prow').forEach(r=>r.onclick=e=>{
@@ -315,8 +314,6 @@ function renderSetup(){
   $('#maxfile').onchange=e=>pickMax(e.target.files[0]);
   if($('#maxdel'))$('#maxdel').onclick=()=>{try{localStorage.removeItem(MKEY)}catch(e){}renderSetup()};
   $('#maxtest').onclick=()=>{unlockAudio();maxPop()};
-  $('#voiceTest').onclick=()=>{unlockAudio();const n=pname(S.sel[0]||'p1');if(!say(['gameon']))callWin(n);else setTimeout(()=>callWin(n),1800);
-    setTimeout(()=>{const v=$('#vstat');if(v)v.textContent=`Stimme: ${Object.keys(VOICE).length} Clips geladen · Audio: ${AC?AC.state:'aus'} · Ton in der App: ${S.sound===false?'aus':'an'}`},400)};
   $('#start').onclick=()=>{const n=S.sel.length;S.cur={id:uid(),players:S.sel.slice(),start:(S.nextStart||0)%n,darts:[],date:Date.now()};save();view='game';mod=1;render();unlockAudio();say(['gameon'])};
 }
 
@@ -368,7 +365,7 @@ function renderGame(){
   const svg=$('#dboard');
   if(svg){svg.addEventListener('pointerdown',e=>{e.preventDefault();
     const pt=svg.createSVGPoint();pt.x=e.clientX;pt.y=e.clientY;
-    const q=pt.matrixTransform(svg.getScreenCTM().inverse());placeDart(q.x,q.y)});
+    const q=pt.matrixTransform(svg.getScreenCTM().inverse());tapDart(q.x,q.y)});
     drawMarks(R.visit.length?R.visit:R.lastV,!R.visit.length)}
   if(R.winner!==null)setTimeout(()=>winDlg(R),700);
 }
@@ -384,42 +381,57 @@ function throwDart(s,m,x,y){
   if(W.winner===null&&!W.visit.length){if(isMax(W.lastV))maxPop();else callVisit(g,W)}
 }
 
-// ---------- Eigene Caller-Stimme (Aufnahmen in voice/) ----------
-const VOICE={};let voiceReady=false;
+// ---------- Eigene Caller-Stimme ----------
+// Die Clips liegen komprimiert in voice.json und werden erst beim ersten Abspielen entpackt.
+// Alle auf einmal zu entpacken braucht ~70 MB und scheitert auf dem iPad.
+const VOICE={},PACK={};let voiceReady=false,voiceErr='';
 const vslug=n=>'name-'+String(n).toLowerCase().replace(/[^a-z0-9äöüß]+/g,'-');
+const b64buf=b64=>{const bin=atob(b64),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u.buffer};
 async function loadVoice(){
-  try{if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();
-    const dec=b=>new Promise((ok,no)=>AC.decodeAudioData(b,ok,no));
-    let pack=null;try{const r=await fetch('voice.json');if(r.ok)pack=await r.json()}catch(e){}
-    if(pack){await Promise.all(Object.entries(pack).map(async([id,b64])=>{try{const bin=atob(b64),u=new Uint8Array(bin.length);
-        for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);VOICE[id]=await dec(u.buffer)}catch(e){}}))}
-    else{const ids=await (await fetch('voice/index.json',{cache:'no-cache'})).json();
-      await Promise.all(ids.map(async id=>{try{VOICE[id]=await dec(await (await fetch('voice/'+id+'.mp3')).arrayBuffer())}catch(e){}}))}
-    voiceReady=true}catch(e){}
+  try{let pack=null;
+    try{const r=await fetch('voice.json');if(r.ok)pack=await r.json()}catch(e){}
+    if(pack)Object.assign(PACK,pack);
+    else{const ids=await (await fetch('voice/index.json',{cache:'no-cache'})).json();ids.forEach(id=>PACK[id]='url:voice/'+id+'.mp3')}
+    voiceReady=true;
+    ['gameon','gameshot','wins','nos','maexchen'].forEach(id=>getBuf(id).catch(()=>{}));
+  }catch(e){voiceErr=String(e)}
 }
 setTimeout(loadVoice,0); // erst nach dem Laden des ganzen Skripts (AC ist weiter unten definiert)
-const hasV=(...ids)=>ids.every(i=>VOICE[i]);
-// spielt die Clips nacheinander ab, gibt die Gesamtdauer zurück
-function say(ids,delay=0){
-  if(S.sound===false||!AC||!hasV(...ids))return 0;
-  try{if(AC.state!=='running')AC.resume();
+const DEC={};
+function getBuf(id){
+  if(VOICE[id])return Promise.resolve(VOICE[id]);
+  if(DEC[id])return DEC[id];
+  if(!PACK[id])return Promise.reject('fehlt');
+  if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();
+  return DEC[id]=(async()=>{
+    const src=PACK[id],ab=src.startsWith('url:')?await (await fetch(src.slice(4))).arrayBuffer():b64buf(src);
+    const buf=await new Promise((ok,no)=>AC.decodeAudioData(ab,ok,no));
+    VOICE[id]=buf;delete DEC[id];
+    const keys=Object.keys(VOICE);if(keys.length>40)delete VOICE[keys[0]];
+    return buf})().catch(e=>{delete DEC[id];voiceErr=String(e);throw e});
+}
+const hasV=(...ids)=>ids.every(i=>PACK[i]);
+// spielt die Clips nacheinander ab; gibt true zurück, wenn alle Aufnahmen vorhanden sind
+function say(ids,delay=0,after){
+  if(S.sound===false||!hasV(...ids))return false;
+  Promise.all(ids.map(getBuf)).then(bufs=>{
+    if(AC.state!=='running')AC.resume();
     let t=AC.currentTime+.03+delay;const g=AC.createGain();g.gain.value=1.15;g.connect(AC.destination);
-    for(const id of ids){const src=AC.createBufferSource();src.buffer=VOICE[id];src.connect(g);src.start(t);t+=VOICE[id].duration+.05}
-    return t-AC.currentTime}catch(e){return 0}
+    bufs.forEach(b=>{const s=AC.createBufferSource();s.buffer=b;s.connect(g);s.start(t);t+=b.duration+.05});
+    if(after)setTimeout(after,(t-AC.currentTime)*1000);
+  }).catch(()=>{});
+  return true;
 }
 function callVisit(g,W){
-  const v=W.P.map(p=>p.visits[p.visits.length-1]);
   const prev=(W.cur-1+g.players.length)%g.players.length,last=W.P[prev].visits[W.P[prev].visits.length-1];
   if(!last)return;
   const sc=last.bust?0:last.t;
-  let d=say([sc===0?'nos':'n'+sc]);
-  const nx=W.P[W.cur],nm=vslug(pname(g.players[W.cur]));
-  
+  say([sc===0?'nos':'n'+sc]);
 }
 function callWin(name){
   const nm=vslug(name);
-  if(hasV('gameshot',nm,'wins')){say(['gameshot',nm,'wins'],0.8);return}
-  if(hasV('gameshot')){const d=say(['gameshot'],0.8);setTimeout(()=>announce(name,true),d*1000);return}
+  if(say(['gameshot',nm,'wins'],0.8))return;
+  if(say(['gameshot'],0.8,()=>announce(name,true)))return;
   announce(name);
 }
 // ---------- Mäxchen: einfache 5, 20 und 1 in einer Aufnahme ----------
@@ -440,6 +452,13 @@ function pickMax(file){if(!file)return;const r=new FileReader();r.onload=()=>{co
 // ---------- Dartboard (mm, Mitte = 0,0, Doppelring außen = 170) ----------
 const ORDER=[20,1,18,4,13,6,10,15,2,17,3,19,7,16,8,11,14,9,12,5];
 const RB={bi:6.35,bo:15.9,ti:99,to:107,di:162,do:170};
+// Touch-Scheibe: Doppel, Triple und Bull vergrößert, damit man sie mit dem Finger trifft.
+// Gespeichert werden immer echte mm-Koordinaten (RB), die Umrechnung läuft über die Ringgrenzen.
+const TB={bi:13,bo:28,ti:90,to:116,di:148,do:176};
+const KT=[0,TB.bi,TB.bo,TB.ti,TB.to,TB.di,TB.do,200],KR=[0,RB.bi,RB.bo,RB.ti,RB.to,RB.di,RB.do,194];
+const mapR=(r,A,B)=>{for(let i=1;i<A.length;i++)if(r<=A[i]||i===A.length-1)return B[i-1]+(r-A[i-1])/(A[i]-A[i-1])*(B[i]-B[i-1]);return r};
+const toReal=(x,y)=>{const r=Math.hypot(x,y);if(!r)return[0,0];const k=mapR(r,KT,KR)/r;return[x*k,y*k]};
+const toTouch=(x,y)=>{const r=Math.hypot(x,y);if(!r)return[0,0];const k=mapR(r,KR,KT)/r;return[x*k,y*k]};
 const pol=(r,a)=>{const t=a*Math.PI/180;return [r*Math.sin(t),-r*Math.cos(t)]};
 function segAt(x,y){
   const r=Math.hypot(x,y);
@@ -449,7 +468,8 @@ function segAt(x,y){
 }
 // Einstieg für die spätere Kameraerkennung: Koordinaten in mm relativ zur Scheibenmitte
 function placeDart(x,y){const h=segAt(x,y);throwDart(h.s,h.m,x,y)}
-window.ocheDetect=placeDart;
+window.ocheDetect=placeDart; // Kamera: echte mm
+function tapDart(x,y){const[rx,ry]=toReal(x,y);placeDart(rx,ry)}
 function segPos(d){
   if(d.x!==undefined)return [d.x,d.y];
   if(d.s===0)return null;if(d.s===25)return d.m===2?[0,0]:[0,-11];
@@ -462,18 +482,18 @@ function boardSVG(){
       return `<path d="M${a.toFixed(2)} ${b.toFixed(2)}A${r2} ${r2} 0 0 1 ${c.toFixed(2)} ${e.toFixed(2)}L${h.toFixed(2)} ${i.toFixed(2)}A${r1} ${r1} 0 0 0 ${j.toFixed(2)} ${k.toFixed(2)}Z" fill="${f}"/>`};
     let o='<circle r="199" fill="#0d1124" stroke="#2d3760" stroke-width="2"/>';
     ORDER.forEach((n,i)=>{const a1=i*18-9,a2=i*18+9,dark=i%2===0,base=dark?'#1c1f1d':'#efe4c6',ring=dark?'#d2362d':'#17945f';
-      o+=sec(RB.bo,RB.ti,a1,a2,base)+sec(RB.ti,RB.to,a1,a2,ring)+sec(RB.to,RB.di,a1,a2,base)+sec(RB.di,RB.do,a1,a2,ring);
+      o+=sec(TB.bo,TB.ti,a1,a2,base)+sec(TB.ti,TB.to,a1,a2,ring)+sec(TB.to,TB.di,a1,a2,base)+sec(TB.di,TB.do,a1,a2,ring);
       const[tx,ty]=pol(186,i*18);o+=`<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" fill="#e8eaf6" font-size="17" font-weight="700" text-anchor="middle" dominant-baseline="central" font-family="Big Shoulders Display,Arial Narrow,sans-serif">${n}</text>`});
-    o+=`<circle r="${RB.bo}" fill="#17945f"/><circle r="${RB.bi}" fill="#d2362d"/>`;
-    ORDER.forEach((n,i)=>{const[a,b]=pol(RB.bo,i*18-9),[c,e]=pol(RB.do,i*18-9);o+=`<line x1="${a}" y1="${b}" x2="${c}" y2="${e}"/>`});
-    [RB.bo,RB.ti,RB.to,RB.di,RB.do].forEach(r=>o+=`<circle r="${r}" fill="none"/>`);
+    o+=`<circle r="${TB.bo}" fill="#17945f"/><circle r="${TB.bi}" fill="#d2362d"/>`;
+    ORDER.forEach((n,i)=>{const[a,b]=pol(TB.bo,i*18-9),[c,e]=pol(TB.do,i*18-9);o+=`<line x1="${a}" y1="${b}" x2="${c}" y2="${e}"/>`});
+    [TB.bo,TB.ti,TB.to,TB.di,TB.do].forEach(r=>o+=`<circle r="${r}" fill="none"/>`);
     BOARD=o.replace(/<line /g,'<line stroke="#9aa0bd" stroke-width=".6" ').replace(/fill="none"\/>/g,'fill="none" stroke="#9aa0bd" stroke-width=".6"/>');
   }
   return `<svg id="dboard" viewBox="-200 -200 400 400" role="img" aria-label="Dartscheibe zum Antippen">${BOARD}<g id="marks"></g></svg>`;
 }
 function drawMarks(darts,faded){
   const g=$('#marks');if(!g)return;
-  g.innerHTML=darts.map((d,i)=>{const p=segPos(d);if(!p)return '';
+  g.innerHTML=darts.map((d,i)=>{let p=segPos(d);if(!p)return '';p=toTouch(p[0],p[1]);
     return `<g opacity="${faded?.45:1}" class="${!faded&&i===darts.length-1?'mk':''}"><circle cx="${p[0]}" cy="${p[1]}" r="9" fill="#b98cff" stroke="#0d1124" stroke-width="2.5"/>
     <text x="${p[0]}" y="${p[1]}" font-size="11" font-weight="700" text-anchor="middle" dominant-baseline="central" fill="#0d1124" font-family="IBM Plex Mono,monospace">${i+1}</text></g>`}).join('');
 }
@@ -516,6 +536,10 @@ function announce(name,short){
     if(speechSynthesis.paused)speechSynthesis.resume();speechSynthesis.speak(u)}catch(e){}
 }
 document.addEventListener('pointerdown',unlockAudio,{passive:true});
+// Kein Reinzoomen bei schnellem Doppeltippen
+document.addEventListener('dblclick',e=>e.preventDefault(),{passive:false});
+document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});
+let lastTouch=0;document.addEventListener('touchend',e=>{const n=Date.now();if(n-lastTouch<350&&e.target.closest&&e.target.closest('#dboard'))e.preventDefault();lastTouch=n},{passive:false});
 document.addEventListener('touchend',unlockAudio,{passive:true});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&AC&&AC.state!=='running')AC.resume().catch(()=>{})});
 function noise(sec){const b=AC.createBuffer(1,AC.sampleRate*sec,AC.sampleRate),d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;const n=AC.createBufferSource();n.buffer=b;return n}
@@ -612,12 +636,12 @@ function heat(hits){
     return `<path d="M${a.toFixed(1)} ${b.toFixed(1)}A${r2} ${r2} 0 0 1 ${c.toFixed(1)} ${e.toFixed(1)}L${h.toFixed(1)} ${i.toFixed(1)}A${r1} ${r1} 0 0 0 ${j.toFixed(1)} ${k.toFixed(1)}Z" fill="${f||base}"/>`};
   let o='<circle r="199" fill="#0d1124"/>';
   ORDER.forEach((n,i)=>{const a1=i*18-9,a2=i*18+9,bs=i%2?'#161d38':'#121831';
-    o+=sec(RB.bo,RB.ti,a1,a2,col(cnt[n+'-1']),bs)+sec(RB.ti,RB.to,a1,a2,col(cnt[n+'-3']),'#1d2547')+sec(RB.to,RB.di,a1,a2,col(cnt[n+'-1']),bs)+sec(RB.di,RB.do,a1,a2,col(cnt[n+'-2']),'#1d2547');
+    o+=sec(TB.bo,TB.ti,a1,a2,col(cnt[n+'-1']),bs)+sec(TB.ti,TB.to,a1,a2,col(cnt[n+'-3']),'#1d2547')+sec(TB.to,TB.di,a1,a2,col(cnt[n+'-1']),bs)+sec(TB.di,TB.do,a1,a2,col(cnt[n+'-2']),'#1d2547');
     const[tx,ty]=pol(186,i*18);o+=`<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" fill="#8e97bd" font-size="17" font-weight="700" text-anchor="middle" dominant-baseline="central" font-family="Big Shoulders Display,Arial Narrow,sans-serif">${n}</text>`});
-  o+=`<circle r="${RB.bo}" fill="${col(cnt['25-1'])||'#1d2547'}"/><circle r="${RB.bi}" fill="${col(cnt['25-2'])||'#161d38'}"/>`;
-  ORDER.forEach((n,i)=>{const[a,b]=pol(RB.bo,i*18-9),[c,e]=pol(RB.do,i*18-9);o+=`<line x1="${a.toFixed(1)}" y1="${b.toFixed(1)}" x2="${c.toFixed(1)}" y2="${e.toFixed(1)}" stroke="#0a0e1f" stroke-width="1.2"/>`});
-  [RB.bo,RB.ti,RB.to,RB.di,RB.do].forEach(r=>o+=`<circle r="${r}" fill="none" stroke="#0a0e1f" stroke-width="1.2"/>`);
-  o+=hits.filter(d=>d.x!==undefined).map(d=>`<circle cx="${d.x}" cy="${d.y}" r="2.6" fill="#fff" opacity=".55"/>`).join('');
+  o+=`<circle r="${TB.bo}" fill="${col(cnt['25-1'])||'#1d2547'}"/><circle r="${TB.bi}" fill="${col(cnt['25-2'])||'#161d38'}"/>`;
+  ORDER.forEach((n,i)=>{const[a,b]=pol(TB.bo,i*18-9),[c,e]=pol(TB.do,i*18-9);o+=`<line x1="${a.toFixed(1)}" y1="${b.toFixed(1)}" x2="${c.toFixed(1)}" y2="${e.toFixed(1)}" stroke="#0a0e1f" stroke-width="1.2"/>`});
+  [TB.bo,TB.ti,TB.to,TB.di,TB.do].forEach(r=>o+=`<circle r="${r}" fill="none" stroke="#0a0e1f" stroke-width="1.2"/>`);
+  o+=hits.filter(d=>d.x!==undefined).map(d=>{const[tx,ty]=toTouch(d.x,d.y);return `<circle cx="${tx.toFixed(1)}" cy="${ty.toFixed(1)}" r="2.6" fill="#fff" opacity=".55"/>`}).join('');
   const top=Object.entries(cnt).sort((x,y)=>y[1]-x[1]).slice(0,4).map(([k,v])=>{const[s,m]=k.split('-').map(Number);return `<span class="tag">${lbl({s,m})} <b>${v}×</b></span>`}).join('');
   return `<div class="heat"><div class="lbl">Trefferbild · ${hits.length} Darts</div>
    <svg viewBox="-200 -200 400 400" role="img" aria-label="Trefferbild auf der Dartscheibe">${o}</svg>
