@@ -130,6 +130,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--gold);outline-o
 .mini b{display:block;font:800 28px var(--f-display);font-variant-numeric:tabular-nums;line-height:1.05}
 
 /* Stats */
+.vstat{margin:0;color:var(--muted);font:500 12px var(--f-mono);text-align:center;min-height:1em}
 .heat{margin-top:16px;display:flex;flex-direction:column;align-items:center;gap:10px;padding-top:14px;border-top:1px solid var(--line)}
 .heat .lbl{align-self:flex-start}
 .heat svg{width:100%;max-width:340px;height:auto;display:block}
@@ -299,6 +300,7 @@ function renderSetup(){
         <div class="row"><label class="btn ghost" for="maxfile">Bild wählen</label><input id="maxfile" type="file" accept="image/*" hidden>
         ${maxImg()?'<button class="btn ghost" id="maxdel" type="button">Entfernen</button>':''}<button class="btn ghost" id="maxtest" type="button">Testen</button></div></div></div>
       <button class="btn ghost" id="voiceTest" type="button">Ansage testen</button>
+      <p class="vstat" id="vstat"></p>
       <button class="btn go" id="start" ${sel.length<1?'disabled':''}>Spiel starten (${sel.length} Spieler)</button></div>
     </section></div>`;
   document.querySelectorAll('.prow').forEach(r=>r.onclick=e=>{
@@ -313,7 +315,8 @@ function renderSetup(){
   $('#maxfile').onchange=e=>pickMax(e.target.files[0]);
   if($('#maxdel'))$('#maxdel').onclick=()=>{try{localStorage.removeItem(MKEY)}catch(e){}renderSetup()};
   $('#maxtest').onclick=()=>{unlockAudio();maxPop()};
-  $('#voiceTest').onclick=()=>{unlockAudio();const n=pname(S.sel[0]||'p1');if(!say(['gameon']))callWin(n);else setTimeout(()=>callWin(n),1800)};
+  $('#voiceTest').onclick=()=>{unlockAudio();const n=pname(S.sel[0]||'p1');if(!say(['gameon']))callWin(n);else setTimeout(()=>callWin(n),1800);
+    setTimeout(()=>{const v=$('#vstat');if(v)v.textContent=`Stimme: ${Object.keys(VOICE).length} Clips geladen · Audio: ${AC?AC.state:'aus'} · Ton in der App: ${S.sound===false?'aus':'an'}`},400)};
   $('#start').onclick=()=>{const n=S.sel.length;S.cur={id:uid(),players:S.sel.slice(),start:(S.nextStart||0)%n,darts:[],date:Date.now()};save();view='game';mod=1;render();unlockAudio();say(['gameon'])};
 }
 
@@ -399,7 +402,7 @@ const hasV=(...ids)=>ids.every(i=>VOICE[i]);
 // spielt die Clips nacheinander ab, gibt die Gesamtdauer zurück
 function say(ids,delay=0){
   if(S.sound===false||!AC||!hasV(...ids))return 0;
-  try{if(AC.state==='suspended')AC.resume();
+  try{if(AC.state!=='running')AC.resume();
     let t=AC.currentTime+.03+delay;const g=AC.createGain();g.gain.value=1.15;g.connect(AC.destination);
     for(const id of ids){const src=AC.createBufferSource();src.buffer=VOICE[id];src.connect(g);src.start(t);t+=VOICE[id].duration+.05}
     return t-AC.currentTime}catch(e){return 0}
@@ -497,7 +500,12 @@ function winDlg(R){
 // ---------- Sound (Web Audio, kein Download nötig) ----------
 let AC=null;
 let SPK=false;
-function unlockAudio(){try{if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume()}catch(e){}
+// iOS: Ton auch bei stummgeschaltetem Gerät wie Medienwiedergabe behandeln (iOS 17+)
+try{if(navigator.audioSession)navigator.audioSession.type='playback'}catch(e){}
+let UNLOCKED=false;
+function unlockAudio(){try{if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();
+  if(AC.state!=='running')AC.resume();
+  if(!UNLOCKED){const b=AC.createBuffer(1,1,22050),src=AC.createBufferSource();src.buffer=b;src.connect(AC.destination);src.start(0);UNLOCKED=true}}catch(e){}
   try{if(!SPK&&'speechSynthesis'in window){const u=new SpeechSynthesisUtterance(' ');u.volume=0;speechSynthesis.speak(u);SPK=true}}catch(e){}}
 function announce(name,short){
   try{if(S.sound===false||!('speechSynthesis'in window))return;
@@ -508,6 +516,8 @@ function announce(name,short){
     if(speechSynthesis.paused)speechSynthesis.resume();speechSynthesis.speak(u)}catch(e){}
 }
 document.addEventListener('pointerdown',unlockAudio,{passive:true});
+document.addEventListener('touchend',unlockAudio,{passive:true});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&AC&&AC.state!=='running')AC.resume().catch(()=>{})});
 function noise(sec){const b=AC.createBuffer(1,AC.sampleRate*sec,AC.sampleRate),d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;const n=AC.createBufferSource();n.buffer=b;return n}
 function winSound(){
   if(S.sound===false||!AC)return;
