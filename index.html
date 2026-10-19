@@ -131,6 +131,8 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--gold);outline-o
 .mini b{display:block;font:800 28px var(--f-display);font-variant-numeric:tabular-nums;line-height:1.05}
 
 /* Stats */
+.schead{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.resetall{display:flex;justify-content:center;padding-top:6px}
 .vstat{margin:0;color:var(--muted);font:500 12px var(--f-mono);text-align:center;min-height:1em}
 .heat{margin-top:16px;display:flex;flex-direction:column;align-items:center;gap:10px;padding-top:14px;border-top:1px solid var(--line)}
 .heat .lbl{align-self:flex-start}
@@ -393,7 +395,7 @@ async function loadVoice(){
     if(pack)Object.assign(PACK,pack);
     else{const ids=await (await fetch('voice/index.json',{cache:'no-cache'})).json();ids.forEach(id=>PACK[id]='url:voice/'+id+'.mp3')}
     voiceReady=true;
-    ['gameon','gameshot','wins','nos','maexchen'].forEach(id=>getBuf(id).catch(()=>{}));
+    warmVoice();
   }catch(e){voiceErr=String(e)}
 }
 setTimeout(loadVoice,0); // erst nach dem Laden des ganzen Skripts (AC ist weiter unten definiert)
@@ -402,22 +404,29 @@ function getBuf(id){
   if(VOICE[id])return Promise.resolve(VOICE[id]);
   if(DEC[id])return DEC[id];
   if(!PACK[id])return Promise.reject('fehlt');
-  if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();
+  if(!AC)AC=mkAC();
   return DEC[id]=(async()=>{
     const src=PACK[id],ab=src.startsWith('url:')?await (await fetch(src.slice(4))).arrayBuffer():b64buf(src);
     const buf=await new Promise((ok,no)=>AC.decodeAudioData(ab,ok,no));
     VOICE[id]=buf;delete DEC[id];
-    const keys=Object.keys(VOICE);if(keys.length>40)delete VOICE[keys[0]];
     return buf})().catch(e=>{delete DEC[id];voiceErr=String(e);throw e});
 }
 const hasV=(...ids)=>ids.every(i=>PACK[i]);
+// Sprache braucht keine 48 kHz: 22 kHz halbiert den Speicher, so passen alle Clips aufs iPad
+function mkAC(){const C=window.AudioContext||window.webkitAudioContext;try{return new C({sampleRate:22050})}catch(e){return new C()}}
+// Alle Clips nacheinander im Hintergrund vorbereiten, häufige Punktzahlen zuerst
+async function warmVoice(){
+  const first=['gameon','gameshot','wins','nos','maexchen',...Object.keys(PACK).filter(k=>k.startsWith('name-')),'n180','n100','n140','n60','n45','n26','n41','n81','n85','n95'];
+  const nums=Object.keys(PACK).filter(k=>/^n\d+$/.test(k)).sort((a,b)=>Math.abs(+a.slice(1)-55)-Math.abs(+b.slice(1)-55));
+  for(const id of [...new Set([...first,...nums])]){if(!PACK[id]||VOICE[id])continue;try{await getBuf(id)}catch(e){}await new Promise(r=>setTimeout(r,25))}
+}
 // spielt die Clips nacheinander ab; gibt true zurück, wenn alle Aufnahmen vorhanden sind
 function say(ids,delay=0,after){
   if(S.sound===false||!hasV(...ids))return false;
   Promise.all(ids.map(getBuf)).then(bufs=>{
     if(AC.state!=='running')AC.resume();
     let t=AC.currentTime+.03+delay;const g=AC.createGain();g.gain.value=1.15;g.connect(AC.destination);
-    bufs.forEach(b=>{const s=AC.createBufferSource();s.buffer=b;s.connect(g);s.start(t);t+=b.duration+.05});
+    bufs.forEach(b=>{const s=AC.createBufferSource(),off=Math.min(.07,b.duration/5);s.buffer=b;s.connect(g);s.start(t,off);t+=b.duration-off+.04});
     if(after)setTimeout(after,(t-AC.currentTime)*1000);
   }).catch(()=>{});
   return true;
@@ -523,7 +532,7 @@ let SPK=false;
 // iOS: Ton auch bei stummgeschaltetem Gerät wie Medienwiedergabe behandeln (iOS 17+)
 try{if(navigator.audioSession)navigator.audioSession.type='playback'}catch(e){}
 let UNLOCKED=false;
-function unlockAudio(){try{if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();
+function unlockAudio(){try{if(!AC)AC=mkAC();
   if(AC.state!=='running')AC.resume();
   if(!UNLOCKED){const b=AC.createBuffer(1,1,22050),src=AC.createBufferSource();src.buffer=b;src.connect(AC.destination);src.start(0);UNLOCKED=true}}catch(e){}
   try{if(!SPK&&'speechSynthesis'in window){const u=new SpeechSynthesisUtterance(' ');u.volume=0;speechSynthesis.speak(u);SPK=true}}catch(e){}}
@@ -586,7 +595,9 @@ function quitDlg(){
 function renderStats(){
   const agg={};
   const games=S.games.slice().sort((a,b)=>a.date-b.date);
+  const RS=S.reset||{};
   for(const g of games){const R=replay(g);g.players.forEach((id,i)=>{
+    if(RS[id]&&g.date<RS[id])return; // vor dem Zurücksetzen gespielt
     const st=pstats(R.P[i]);const a=agg[id]||(agg[id]={g:0,w:0,pts:0,darts:0,f9p:0,f9n:0,att:0,out:0,c90:0,c110:0,c130:0,c180:0,winDarts:[],hiCo:0,avgs:[],hits:[]});
     R.P[i].visits.forEach(v=>v.d.forEach(d=>a.hits.push(d)));
     a.g++;a.pts+=st.pts;a.darts+=st.darts;if(st.f9){a.f9p+=st.f9;a.f9n++}
@@ -596,7 +607,7 @@ function renderStats(){
   const card=id=>{const a=agg[id];const avg=a.darts?a.pts/a.darts*3:0;
     const dpw=a.winDarts.length?a.winDarts.reduce((x,y)=>x+y,0)/a.winDarts.length:0;
     const best=a.winDarts.length?Math.min(...a.winDarts):0;
-    return `<section class="panel scard"><h3>${esc(pname(id))}</h3>
+    return `<section class="panel scard"><div class="schead"><h3>${esc(pname(id))}</h3><button class="linkbtn" data-reset="${id}">Zurücksetzen</button></div>
       <div class="sub">${a.g} Spiele · ${a.w} Siege (${a.g?Math.round(a.w/a.g*100):0} %)</div>
       <div class="kv">
         <div><span class="lbl">Ø 3 Darts</span><b>${avg.toFixed(1)}</b></div>
@@ -617,11 +628,14 @@ function renderStats(){
     <td>${R.P[g.players.indexOf(g.winner)].darts}</td><td>${R.P[g.players.indexOf(g.winner)].coVal}</td></tr>`}).join('');
   $('#view').innerHTML=ids.length?`<div class="sgrid">${ids.map(card).join('')}</div>
     <section class="panel"><div class="lbl" style="margin-bottom:6px">Letzte Spiele</div><div class="tw"><table class="hist">
-    <tr><th>Datum</th><th>Sieger</th><th>Ø je Spieler</th><th>Darts</th><th>Finish</th></tr>${rows}</table></div></section>`
+    <tr><th>Datum</th><th>Sieger</th><th>Ø je Spieler</th><th>Darts</th><th>Finish</th></tr>${rows}</table></div></section>
+    <div class="resetall"><button class="linkbtn" id="resetAll">Alle Statistiken zurücksetzen</button></div>`
     :`<section class="panel empty"><div style="font:800 32px var(--f-display);text-transform:uppercase;color:var(--ink)">Noch keine Spiele</div>
     <p>Sobald ihr das erste 501 beendet habt, stehen hier Schnitt, First 9, Doppelquote, Darts pro Sieg und eure 90+, 110+, 130+ und 180er.</p>
     <button class="btn go" id="toGame">Spiel starten</button></section>`;
   const tg=$('#toGame');if(tg)tg.onclick=()=>nav(S.cur?'game':'setup');
+  document.querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>resetDlg(b.dataset.reset));
+  const ra=$('#resetAll');if(ra)ra.onclick=()=>resetDlg(null);
 }
 // ---------- Treffer-Heatmap pro Spieler ----------
 function heat(hits){
@@ -648,6 +662,16 @@ function heat(hits){
    <div class="heatleg"><span>selten</span><i></i><span>oft</span></div>
    <div class="tops">${top}${miss?`<span class="tag">Miss <b>${miss}×</b></span>`:''}</div>
    <p class="note">Punkte zeigen die genauen Stellen, wenn auf der Scheibe getippt wurde.</p></div>`;
+}
+// ---------- Statistik zurücksetzen ----------
+function resetDlg(id){
+  const o=$('#ov');o.hidden=false;o.className='ov';
+  const who=id?esc(pname(id)):'alle Spieler';
+  o.innerHTML=`<div class="dlg" role="dialog" aria-modal="true"><h2>Statistik zurücksetzen?</h2>
+    <p style="margin:0;color:var(--muted)">${id?`Alle Werte von <b style="color:var(--ink)">${who}</b> starten wieder bei null. Die Spiele der anderen Spieler bleiben unverändert.`:'Alle gespeicherten Spiele werden gelöscht, für alle Spieler. Das lässt sich nicht rückgängig machen.'}</p>
+    <div class="row"><button class="btn" id="ry" style="background:var(--red);color:#fff">Zurücksetzen</button><button class="btn ghost" id="rn">Abbrechen</button></div></div>`;
+  $('#ry').onclick=()=>{if(id){S.reset=S.reset||{};S.reset[id]=Date.now()}else{S.games=[];S.reset={}}save();o.hidden=true;renderStats()};
+  $('#rn').onclick=()=>{o.hidden=true};
 }
 function spark(v){
   if(v.length<2)return '';
